@@ -1,0 +1,93 @@
+openapi: 3.0.3
+info:
+  title: Sample API
+  version: "1.0"
+servers:
+  - url: http://localhost:8080
+paths:
+  /models:
+    get:
+      summary: Get all models
+      description: Retrieve a list of all models
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+  /models/{model_id}:
+    get:
+      summary: Get model by ID
+      description: Retrieve details of a specific model
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  status:
+                    type: string
+  /training-jobs:
+    get:
+      summary: List training jobs
+      description: Retrieve all training jobs
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    job_id:
+                      type: string
+                    model_id:
+                      type: string
+                    status:
+                      type: string
+  /training-jobs/{job_id}:
+    get:
+      summary: Get training job details
+      description: Retrieve details of a specific training job
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  model_id:
+                    type: string
+                  status:
+                    type: string
