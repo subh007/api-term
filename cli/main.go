@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"strings"
 
@@ -12,13 +13,19 @@ import (
 )
 
 func main() {
+	// parse CLI flags
+	fileFlag := flag.String("file", config.DefaultOpenAPIFile, "path to OpenAPI file")
+	flag.Parse()
+
+	cfg := config.New(*fileFlag)
+
 	if err := ui.Init(); err != nil {
 		log.Fatalf("failed to initialize termui: %v", err)
 	}
 	defer ui.Close()
 
 	// Load OpenAPI endpoints
-	endpoints := parser.ParseOpenAPI(config.OpenAPIFile)
+	endpoints := parser.ParseOpenAPI(cfg.OpenAPIFile)
 
 	// --- Setup UI ---
 	list := widgets.NewList()
@@ -82,7 +89,7 @@ func main() {
 						}
 					}
 				}
-				resp := client.InvokeEndpoint(config.BaseURL, ep, inputValues)
+				resp := client.InvokeEndpoint(cfg.BaseURL, ep, inputValues)
 				output.Text = resp
 				userInput = ""
 				input.Text = ""
