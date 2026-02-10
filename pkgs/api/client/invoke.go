@@ -3,14 +3,13 @@ package client
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"strings"
 
 	"org.subh/api-term/pkgs/api/model"
 )
 
-func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]string) string {
+func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]string) (string, int, error) {
 	finalPath := ep.Path
 
 	// Fill path parameters
@@ -18,7 +17,7 @@ func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]s
 		if param.In == "path" {
 			val, ok := inputValues[param.Name]
 			if !ok {
-				log.Fatalf("Missing path param: %s", param.Name)
+				return "", 0, fmt.Errorf("Missing path param: %s", param.Name)
 			}
 			finalPath = strings.Replace(finalPath, "{"+param.Name+"}", val, 1)
 		}
@@ -41,9 +40,9 @@ func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]s
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
+		return "", 0, fmt.Errorf("Error: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := ioutil.ReadAll(resp.Body)
-	return string(body)
+	return string(body), resp.StatusCode, nil
 }
