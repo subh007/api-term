@@ -13,12 +13,26 @@ import (
 	"org.subh/api-term/pkgs/config"
 )
 
+// stringSlice implements flag.Value for multiple flags
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return fmt.Sprint(*s)
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 func main() {
 	// parse CLI flags
 	fileFlag := flag.String("file", config.DefaultOpenAPIFile, "path to OpenAPI file")
+	var urlFlags stringSlice
+	flag.Var(&urlFlags, "url", "URL to OpenAPI spec (can be repeated)")
 	flag.Parse()
 
-	cfg := config.New(*fileFlag)
+	cfg := config.New(*fileFlag, urlFlags)
 
 	if err := ui.Init(); err != nil {
 		log.Fatalf("failed to initialize termui: %v", err)
@@ -26,7 +40,9 @@ func main() {
 	defer ui.Close()
 
 	// Load OpenAPI endpoints
-	endpoints := parser.ParseOpenAPI(cfg.OpenAPIFile)
+	// For backward compatibility, treat fileFlag as a single file in a slice
+	files := []string{cfg.OpenAPIFile}
+	endpoints := parser.ParseOpenAPI(files, cfg.OpenAPIURLs)
 
 	// --- Setup UI ---
 	list := widgets.NewList()
