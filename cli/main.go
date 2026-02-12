@@ -9,6 +9,7 @@ import (
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
 	"org.subh/api-term/pkgs/api/client"
+	"org.subh/api-term/pkgs/api/model"
 	"org.subh/api-term/pkgs/api/parser"
 	"org.subh/api-term/pkgs/config"
 )
@@ -25,14 +26,38 @@ func (s *stringSlice) Set(value string) error {
 	return nil
 }
 
+func formatEndpointRow(ep *model.Endpoint) string {
+	var queryParams []string
+	for _, p := range ep.Parameters {
+		if p.In == "query" {
+			queryParams = append(queryParams, p.Name)
+		}
+	}
+	if len(queryParams) == 0 {
+		return ep.Method + " " + ep.Path
+	}
+	return fmt.Sprintf("%s %s?%s", ep.Method, ep.Path, strings.Join(queryParams, "&"))
+}
+
 func main() {
 	// parse CLI flags
 	fileFlag := flag.String("file", config.DefaultOpenAPIFile, "path to OpenAPI file")
 	var urlFlags stringSlice
 	flag.Var(&urlFlags, "url", "URL to OpenAPI spec (can be repeated)")
+	var queryFlags stringSlice
+	flag.Var(&queryFlags, "q", "Global query param key=value (can be repeated)")
+	flag.Var(&queryFlags, "query", "Global query param key=value (can be repeated)")
 	flag.Parse()
 
-	cfg := config.New(*fileFlag, urlFlags)
+	globalQueryParams := make(map[string]string)
+	for _, q := range queryFlags {
+		parts := strings.SplitN(q, "=", 2)
+		if len(parts) == 2 {
+			globalQueryParams[parts[0]] = parts[1]
+		}
+	}
+
+	cfg := config.New(*fileFlag, urlFlags, globalQueryParams)
 
 	if err := ui.Init(); err != nil {
 		log.Fatalf("failed to initialize termui: %v", err)
@@ -48,7 +73,7 @@ func main() {
 	list := widgets.NewList()
 	list.Title = "API Endpoints (j/k to scroll, ENTER to select)"
 	for _, ep := range endpoints {
-		list.Rows = append(list.Rows, ep.Method+" "+ep.Path)
+		list.Rows = append(list.Rows, formatEndpointRow(ep))
 	}
 	list.SelectedRow = 0
 	list.TextStyle = ui.NewStyle(ui.ColorYellow)
@@ -59,6 +84,16 @@ func main() {
 	output.Text = "Press ENTER to invoke endpoint"
 	output.WrapText = true
 
+	baseURLWidget := widgets.NewParagraph()
+	baseURLWidget.Title = "Base URL (press 'b' to edit)"
+	baseURLWidget.Text = cfg.BaseURL
+	baseURLWidget.BorderStyle.Fg = ui.ColorMagenta
+
+	headersWidget := widgets.NewParagraph()
+	headersWidget.Title = "Headers (key:value&key2:value2) - Press 'H' to edit"
+	headersWidget.Text = ""
+	headersWidget.BorderStyle.Fg = ui.ColorBlue
+
 	input := widgets.NewParagraph()
 	input.Title = "Query Parameters (param=value) - Press 'i' to edit"
 	input.Text = ""
@@ -66,7 +101,9 @@ func main() {
 
 	termWidth, termHeight := ui.TerminalDimensions()
 	list.SetRect(0, 0, termWidth, termHeight/2)
-	output.SetRect(0, termHeight/2, termWidth, termHeight-3)
+	output.SetRect(0, termHeight/2, termWidth, termHeight-9)
+	baseURLWidget.SetRect(0, termHeight-9, termWidth, termHeight-6)
+	headersWidget.SetRect(0, termHeight-6, termWidth, termHeight-3)
 	input.SetRect(0, termHeight-3, termWidth, termHeight)
 
 	// Help Overlay
@@ -78,19 +115,25 @@ func main() {
 	  k / <Up>     Navigate Up
 	  Enter        Select Endpoint / Invoke
 	  i            Focus Input
+	  b            Edit Base URL
+	  H            Edit Headers
 	  ? / h        Toggle Help
 	  q / <C-c>    Quit
 	`
 	help.SetRect(termWidth/4, termHeight/4, 3*termWidth/4, 3*termHeight/4)
 	help.BorderStyle.Fg = ui.ColorYellow
 
-	ui.Render(list, output, input)
+	ui.Render(list, output, baseURLWidget, headersWidget, input)
 
 	// --- Event loop ---
 	uiEvents := ui.PollEvents()
 	// selected := 0
-	userInput := ""
+	baseURL := cfg.BaseURL
+	queryInput := ""
+	headerInput := ""
+	editBuffer := ""
 	inputMode := false
+	editTarget := ""
 	showHelp := false
 
 	for {
@@ -104,17 +147,49 @@ func main() {
 			switch e.ID {
 			case "<Enter>":
 				inputMode = false
+				switch editTarget {
+				case "params":
+					queryInput = editBuffer
+					input.Text = queryInput
+					input.BorderStyle.Fg = ui.ColorCyan
+				case "baseurl":
+					trimmed := strings.TrimSpace(editBuffer)
+					if trimmed != "" {
+						baseURL = trimmed
+						baseURLWidget.Text = baseURL
+					} else {
+						baseURLWidget.Text = baseURL
+					}
+					baseURLWidget.BorderStyle.Fg = ui.ColorMagenta
+				case "headers":
+					headerInput = strings.TrimSpace(editBuffer)
+					headersWidget.Text = headerInput
+					headersWidget.BorderStyle.Fg = ui.ColorBlue
+				}
+				editTarget = ""
 			case "<Backspace>":
-				if len(userInput) > 0 {
-					userInput = userInput[:len(userInput)-1]
-					input.Text = userInput
+				if len(editBuffer) > 0 {
+					editBuffer = editBuffer[:len(editBuffer)-1]
+					if editTarget == "baseurl" {
+						baseURLWidget.Text = editBuffer
+					} else if editTarget == "headers" {
+						headersWidget.Text = editBuffer
+					} else {
+						input.Text = editBuffer
+					}
 				}
 			case "<C-c>":
 				return
 			default:
 				if len(e.ID) == 1 {
-					userInput += e.ID
-					input.Text = userInput
+					editBuffer += e.ID
+					if editTarget == "baseurl" {
+						baseURLWidget.Text = editBuffer
+					} else if editTarget == "headers" {
+						headersWidget.Text = editBuffer
+					} else {
+						input.Text = editBuffer
+					}
 				}
 			}
 		} else {
@@ -134,20 +209,32 @@ func main() {
 			case "<Enter>":
 				ep := endpoints[list.SelectedRow]
 				inputValues := map[string]string{}
+				// Initialize with global query params
+				for k, v := range cfg.GlobalQueryParams {
+					inputValues[k] = v
+				}
+				headerValues := map[string]string{}
 
 				// Check for shorthand input (single required path param, no '=')
 				var requiredPathParams []string
+				var requiredQueryParams []string
 				for _, p := range ep.Parameters {
 					if p.Required && p.In == "path" {
 						requiredPathParams = append(requiredPathParams, p.Name)
+					} else if p.Required && p.In == "query" {
+						requiredQueryParams = append(requiredQueryParams, p.Name)
 					}
 				}
 
-				if len(requiredPathParams) == 1 && !strings.Contains(userInput, "=") && userInput != "" {
-					inputValues[requiredPathParams[0]] = userInput
-				} else if userInput != "" {
+				if queryInput != "" && !strings.Contains(queryInput, "=") && !strings.Contains(queryInput, "&") {
+					if len(requiredPathParams) == 1 && len(requiredQueryParams) == 0 {
+						inputValues[requiredPathParams[0]] = queryInput
+					} else if len(requiredPathParams) == 0 && len(requiredQueryParams) == 1 {
+						inputValues[requiredQueryParams[0]] = queryInput
+					}
+				} else if queryInput != "" {
 					// Simple query param parsing key=value&key2=value2
-					pairs := strings.Split(userInput, "&")
+					pairs := strings.Split(queryInput, "&")
 					for _, p := range pairs {
 						kv := strings.SplitN(p, "=", 2)
 						if len(kv) == 2 {
@@ -155,7 +242,35 @@ func main() {
 						}
 					}
 				}
-				resp, statusCode, err := client.InvokeEndpoint(cfg.BaseURL, ep, inputValues)
+				if headerInput != "" {
+					pairs := strings.FieldsFunc(headerInput, func(r rune) bool {
+						return r == '&' || r == ';'
+					})
+					for _, p := range pairs {
+						p = strings.TrimSpace(p)
+						if p == "" {
+							continue
+						}
+						kv := strings.SplitN(p, ":", 2)
+						if len(kv) == 2 {
+							key := strings.TrimSpace(kv[0])
+							val := strings.TrimSpace(kv[1])
+							if key != "" {
+								headerValues[key] = val
+							}
+							continue
+						}
+						kv = strings.SplitN(p, "=", 2)
+						if len(kv) == 2 {
+							key := strings.TrimSpace(kv[0])
+							val := strings.TrimSpace(kv[1])
+							if key != "" {
+								headerValues[key] = val
+							}
+						}
+					}
+				}
+				resp, statusCode, err := client.InvokeEndpoint(baseURL, ep, inputValues, headerValues)
 				statusColor := "green" // default success
 				output.BorderStyle.Fg = ui.ColorGreen
 
@@ -170,10 +285,28 @@ func main() {
 				} else {
 					output.Text = fmt.Sprintf("[Status: %d](fg:%s)\n\n%s", statusCode, statusColor, resp)
 				}
-				userInput = ""
+				queryInput = ""
 				input.Text = ""
 			case "i":
 				inputMode = true
+				editTarget = "params"
+				editBuffer = queryInput
+				input.Text = editBuffer
+				input.BorderStyle.Fg = ui.ColorYellow
+				output.BorderStyle.Fg = ui.ColorWhite
+			case "b":
+				inputMode = true
+				editTarget = "baseurl"
+				editBuffer = baseURL
+				baseURLWidget.Text = editBuffer
+				baseURLWidget.BorderStyle.Fg = ui.ColorYellow
+				output.BorderStyle.Fg = ui.ColorWhite
+			case "H":
+				inputMode = true
+				editTarget = "headers"
+				editBuffer = headerInput
+				headersWidget.Text = editBuffer
+				headersWidget.BorderStyle.Fg = ui.ColorYellow
 				output.BorderStyle.Fg = ui.ColorWhite
 			case "?", "h":
 				showHelp = true
@@ -197,7 +330,7 @@ func main() {
 		if showHelp {
 			ui.Render(help)
 		} else {
-			ui.Render(list, input, output)
+			ui.Render(list, output, baseURLWidget, headersWidget, input)
 		}
 	}
 }
