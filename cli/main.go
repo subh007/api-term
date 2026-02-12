@@ -79,10 +79,12 @@ func main() {
 	list.TextStyle = ui.NewStyle(ui.ColorYellow)
 	list.WrapText = false
 
-	output := widgets.NewParagraph()
-	output.Title = "Response"
-	output.Text = "Press ENTER to invoke endpoint"
+	output := widgets.NewList()
+	output.Title = "Response (Tab/r to focus, j/k to scroll)"
+	output.Rows = []string{"Press ENTER to invoke endpoint"}
 	output.WrapText = true
+	output.TextStyle = ui.NewStyle(ui.ColorWhite)
+	output.SelectedRowStyle = ui.NewStyle(ui.ColorWhite, ui.ColorBlack) // default to no highlight until focused
 
 	baseURLWidget := widgets.NewParagraph()
 	baseURLWidget.Title = "Base URL (press 'b' to edit)"
@@ -111,8 +113,9 @@ func main() {
 	help.Title = "Help"
 	help.Text = `
 	Navigation Keys:
-	  j / <Down>   Navigate Down
-	  k / <Up>     Navigate Up
+	  Tab / r      Toggle Focus (Endpoints <-> Response)
+	  j / <Down>   Scroll Down (Endpoints or Response)
+	  k / <Up>     Scroll Up
 	  Enter        Select Endpoint / Invoke
 	  i            Focus Input
 	  b            Edit Base URL
@@ -136,9 +139,13 @@ func main() {
 	editTarget := ""
 	showHelp := false
 
+	// focusMode: "list" (endpoints) or "output" (response)
+	focusMode := "list"
+
 	for {
 		e := <-uiEvents
 		if showHelp {
+			// ...
 			switch e.ID {
 			case "?", "h", "<Escape>":
 				showHelp = false
@@ -196,17 +203,44 @@ func main() {
 			switch e.ID {
 			case "q", "<C-c>":
 				return
-			case "j", "<Down>":
-				if list.SelectedRow < len(list.Rows)-1 {
-					list.SelectedRow++
+			case "<Tab>", "r":
+				if focusMode == "list" {
+					focusMode = "output"
+					list.TitleStyle = ui.NewStyle(ui.ColorWhite)
+					list.BorderStyle.Fg = ui.ColorWhite
+					output.TitleStyle = ui.NewStyle(ui.ColorYellow)
+					output.BorderStyle.Fg = ui.ColorYellow
+				} else {
+					focusMode = "list"
+					list.TitleStyle = ui.NewStyle(ui.ColorYellow)
+					list.BorderStyle.Fg = ui.ColorYellow
+					output.TitleStyle = ui.NewStyle(ui.ColorWhite)
 					output.BorderStyle.Fg = ui.ColorWhite
+				}
+			case "j", "<Down>":
+				if focusMode == "list" {
+					if list.SelectedRow < len(list.Rows)-1 {
+						list.SelectedRow++
+					}
+				} else {
+					if output.SelectedRow < len(output.Rows)-1 {
+						output.SelectedRow++
+					}
 				}
 			case "k", "<Up>":
-				if list.SelectedRow > 0 {
-					list.SelectedRow--
-					output.BorderStyle.Fg = ui.ColorWhite
+				if focusMode == "list" {
+					if list.SelectedRow > 0 {
+						list.SelectedRow--
+					}
+				} else {
+					if output.SelectedRow > 0 {
+						output.SelectedRow--
+					}
 				}
 			case "<Enter>":
+				if focusMode == "output" {
+					continue
+				}
 				ep := endpoints[list.SelectedRow]
 				inputValues := map[string]string{}
 				// Initialize with global query params
@@ -280,11 +314,15 @@ func main() {
 				}
 
 				if err != nil {
-					output.Text = fmt.Sprintf("Error: %s ([Status: %d](fg:%s))", err.Error(), statusCode, statusColor)
+					output.Rows = []string{fmt.Sprintf("Error: %s", err.Error()), fmt.Sprintf("[Status: %d](fg:%s)", statusCode, statusColor)}
 					output.BorderStyle.Fg = ui.ColorRed
 				} else {
-					output.Text = fmt.Sprintf("[Status: %d](fg:%s)\n\n%s", statusCode, statusColor, resp)
+					formattedResp := tryFormatJSON(resp)
+					headerLine := fmt.Sprintf("[Status: %d](fg:%s)", statusCode, statusColor)
+					output.Rows = append([]string{headerLine, ""}, splitLines(formattedResp)...)
+					output.BorderStyle.Fg = ui.ColorGreen
 				}
+				output.SelectedRow = 0
 				queryInput = ""
 				input.Text = ""
 			case "i":
