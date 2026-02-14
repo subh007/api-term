@@ -46,24 +46,30 @@ type MainHandler struct {
 	Config            *config.Config
 
 	// UI Widgets
-	List          *widgets.List
-	Output        *widgets.List
-	BaseURLWidget *widgets.Paragraph
-	HeadersWidget *widgets.Paragraph
-	Input         *widgets.Paragraph
-	Help          *widgets.Paragraph
+	List              *widgets.List
+	Output            *widgets.List
+	BaseURLWidget     *widgets.Paragraph
+	HeadersWidget     *widgets.Paragraph
+	Input             *widgets.Paragraph
+	BodyWidget        *widgets.Paragraph
+	ContentTypeWidget *widgets.Paragraph
+	Help              *widgets.Paragraph
 
 	// State
-	FocusMode    string
-	ShowHelp     bool
-	InputMode    bool
-	EditTarget   string
-	EditBuffer   string
-	QueryInput   string
-	HeaderInput  string
-	BaseURL      string
-	InputValues  map[string]string
-	HeaderValues map[string]string
+	FocusMode        string
+	ShowHelp         bool
+	InputMode        bool
+	EditTarget       string
+	EditBuffer       string
+	QueryInput       string
+	HeaderInput      string
+	BodyInput        string
+	ContentTypeInput string
+	BaseURL          string
+	InputValues      map[string]string
+	HeaderValues     map[string]string
+	TermWidth        int
+	TermHeight       int
 }
 
 func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandler {
@@ -99,7 +105,18 @@ func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandle
 	input := widgets.NewParagraph()
 	input.Title = "Query Parameters (param=value) - Press 'i' to edit"
 	input.Text = ""
+	input.Text = ""
 	input.BorderStyle.Fg = ui.ColorCyan
+
+	bodyWidget := widgets.NewParagraph()
+	bodyWidget.Title = "Body (Press 'B' to edit)"
+	bodyWidget.Text = ""
+	bodyWidget.BorderStyle.Fg = ui.ColorCyan
+
+	contentTypeWidget := widgets.NewParagraph()
+	contentTypeWidget.Title = "Content-Type (Press 'C' to edit)"
+	contentTypeWidget.Text = "application/json"
+	contentTypeWidget.BorderStyle.Fg = ui.ColorCyan
 
 	help := widgets.NewParagraph()
 	help.Title = "Help"
@@ -111,7 +128,11 @@ func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandle
 	  Enter        Select Endpoint / Invoke
 	  i            Focus Input
 	  b            Edit Base URL
+	  i            Focus Input
+	  b            Edit Base URL
 	  H            Edit Headers
+	  B            Edit Body
+	  C            Edit Content-Type
 	  ? / h        Toggle Help
 	  q / <C-c>    Quit
 	`
@@ -126,9 +147,12 @@ func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandle
 		BaseURLWidget:     baseURLWidget,
 		HeadersWidget:     headersWidget,
 		Input:             input,
+		BodyWidget:        bodyWidget,
+		ContentTypeWidget: contentTypeWidget,
 		Help:              help,
 		FocusMode:         "list",
 		BaseURL:           cfg.BaseURL,
+		ContentTypeInput:  "application/json",
 		InputValues:       make(map[string]string),
 		HeaderValues:      make(map[string]string),
 	}
@@ -141,11 +165,75 @@ func (h *MainHandler) Init(termWidth, termHeight int) {
 }
 
 func (h *MainHandler) Resize(termWidth, termHeight int) {
-	h.List.SetRect(0, 0, termWidth, termHeight/2)
-	h.Output.SetRect(0, termHeight/2, termWidth, termHeight-9)
-	h.BaseURLWidget.SetRect(0, termHeight-9, termWidth, termHeight-6)
-	h.HeadersWidget.SetRect(0, termHeight-6, termWidth, termHeight-3)
-	h.Input.SetRect(0, termHeight-3, termWidth, termHeight)
+	h.TermWidth = termWidth
+	h.TermHeight = termHeight
+	h.updateLayout()
+}
+
+func (h *MainHandler) updateLayout() {
+	termWidth := h.TermWidth
+	termHeight := h.TermHeight
+
+	// Determine if we need to show body widget
+	showBody := false
+	if len(h.Endpoints) > 0 && h.List.SelectedRow < len(h.Endpoints) {
+		currEp := h.Endpoints[h.List.SelectedRow]
+		if strings.EqualFold(currEp.Method, "POST") || strings.EqualFold(currEp.Method, "PUT") {
+			showBody = true
+		}
+	}
+
+	// Bottom-up allocation
+	bottomY := termHeight
+
+	// ContentType (Always allocate space for consistency, though only rendered for POST/PUT)
+	h.ContentTypeWidget.SetRect(0, bottomY-3, termWidth, bottomY)
+	bottomY -= 3
+
+	// Input
+	h.Input.SetRect(0, bottomY-3, termWidth, bottomY)
+	bottomY -= 3
+
+	// Check space for Headers
+	if bottomY >= 5 { // Need at least 2 lines for List/Output + 3 for Headers
+		h.HeadersWidget.SetRect(0, bottomY-3, termWidth, bottomY)
+		bottomY -= 3
+	} else {
+		h.HeadersWidget.SetRect(0, 0, 0, 0) // Hide
+	}
+
+	// Check space for BaseURL
+	if bottomY >= 5 { // Need at least 2 lines for List/Output + 3 for BaseURL
+		h.BaseURLWidget.SetRect(0, bottomY-3, termWidth, bottomY)
+		bottomY -= 3
+	} else {
+		h.BaseURLWidget.SetRect(0, 0, 0, 0) // Hide
+	}
+
+	// List and Output share remaining top space
+	if bottomY > 0 {
+		listHeight := bottomY / 2
+		if listHeight < 1 {
+			listHeight = 1
+		}
+
+		if showBody {
+			// Split top area for List and BodyWidget
+			h.List.SetRect(0, 0, termWidth/2, listHeight)
+			h.BodyWidget.SetRect(termWidth/2, 0, termWidth, listHeight)
+		} else {
+			// List takes full width
+			h.List.SetRect(0, 0, termWidth, listHeight)
+			h.BodyWidget.SetRect(0, 0, 0, 0) // Hide
+		}
+
+		h.Output.SetRect(0, listHeight, termWidth, bottomY)
+	} else {
+		// Extreme fallback
+		h.List.SetRect(0, 0, termWidth, 1)
+		h.Output.SetRect(0, 0, 0, 0)
+	}
+
 	h.Help.SetRect(termWidth/4, termHeight/4, 3*termWidth/4, 3*termHeight/4)
 }
 
@@ -168,6 +256,13 @@ func (h *MainHandler) Render() {
 		}
 
 		ui.Render(h.List, h.Output, h.BaseURLWidget, h.HeadersWidget, h.Input)
+
+		h.updateLayout()
+		ui.Render(h.List, h.Output, h.BaseURLWidget, h.HeadersWidget, h.Input)
+
+		if strings.EqualFold(currEp.Method, "POST") || strings.EqualFold(currEp.Method, "PUT") {
+			ui.Render(h.BodyWidget, h.ContentTypeWidget)
+		}
 	}
 }
 
@@ -208,6 +303,14 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 				h.HeaderInput = strings.TrimSpace(h.EditBuffer)
 				h.HeadersWidget.Text = h.HeaderInput
 				h.HeadersWidget.BorderStyle.Fg = ui.ColorBlue
+			case "body":
+				h.BodyInput = h.EditBuffer
+				h.BodyWidget.Text = h.BodyInput
+				h.BodyWidget.BorderStyle.Fg = ui.ColorCyan
+			case "content-type":
+				h.ContentTypeInput = strings.TrimSpace(h.EditBuffer)
+				h.ContentTypeWidget.Text = h.ContentTypeInput
+				h.ContentTypeWidget.BorderStyle.Fg = ui.ColorCyan
 			}
 			h.EditTarget = ""
 		case "<Backspace>":
@@ -230,6 +333,12 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 					h.BaseURLWidget.Text = h.EditBuffer
 				} else if h.EditTarget == "headers" {
 					h.HeadersWidget.Text = h.EditBuffer
+				} else if h.EditTarget == "headers" {
+					h.HeadersWidget.Text = h.EditBuffer
+				} else if h.EditTarget == "body" {
+					h.BodyWidget.Text = h.EditBuffer
+				} else if h.EditTarget == "content-type" {
+					h.ContentTypeWidget.Text = h.EditBuffer
 				} else {
 					h.Input.Text = h.EditBuffer
 				}
@@ -342,7 +451,7 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 				}
 			}
 		}
-		resp, statusCode, err := client.InvokeEndpoint(h.BaseURL, ep, inputValues, headerValues)
+		resp, statusCode, err := client.InvokeEndpoint(h.BaseURL, ep, inputValues, headerValues, h.BodyInput, h.ContentTypeInput)
 		statusColor := "green" // default success
 		h.Output.BorderStyle.Fg = ui.ColorGreen
 
@@ -363,6 +472,7 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 		h.Output.SelectedRow = 0
 		h.QueryInput = ""
 		h.Input.Text = ""
+
 	case "i":
 		h.InputMode = true
 		h.EditTarget = "params"
@@ -384,6 +494,26 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 		h.HeadersWidget.Text = h.EditBuffer
 		h.HeadersWidget.BorderStyle.Fg = ui.ColorYellow
 		h.Output.BorderStyle.Fg = ui.ColorWhite
+	case "B":
+		currEp := h.Endpoints[h.List.SelectedRow]
+		if strings.EqualFold(currEp.Method, "POST") || strings.EqualFold(currEp.Method, "PUT") {
+			h.InputMode = true
+			h.EditTarget = "body"
+			h.EditBuffer = h.BodyInput
+			h.BodyWidget.Text = h.EditBuffer
+			h.BodyWidget.BorderStyle.Fg = ui.ColorYellow
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+		}
+	case "C":
+		currEp := h.Endpoints[h.List.SelectedRow]
+		if strings.EqualFold(currEp.Method, "POST") || strings.EqualFold(currEp.Method, "PUT") {
+			h.InputMode = true
+			h.EditTarget = "content-type"
+			h.EditBuffer = h.ContentTypeInput
+			h.ContentTypeWidget.Text = h.EditBuffer
+			h.ContentTypeWidget.BorderStyle.Fg = ui.ColorYellow
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+		}
 	case "?", "h":
 		h.ShowHelp = true
 	}

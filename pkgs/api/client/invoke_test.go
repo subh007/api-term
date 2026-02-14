@@ -21,7 +21,7 @@ func TestInvokeEndpoint_MissingPathParam(t *testing.T) {
 	}
 
 	inputValues := map[string]string{}
-	_, _, err := InvokeEndpoint("http://localhost", ep, inputValues, nil)
+	_, _, err := InvokeEndpoint("http://localhost", ep, inputValues, nil, "", "")
 
 	if err == nil {
 		t.Fatal("Expected error for missing path param, got nil")
@@ -47,7 +47,7 @@ func TestInvokeEndpoint_MissingQueryParam(t *testing.T) {
 	}
 
 	inputValues := map[string]string{}
-	_, _, err := InvokeEndpoint("http://localhost", ep, inputValues, nil)
+	_, _, err := InvokeEndpoint("http://localhost", ep, inputValues, nil, "", "")
 
 	if err == nil {
 		t.Fatal("Expected error for missing query param, got nil")

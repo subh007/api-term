@@ -23,6 +23,23 @@ paths:
                       type: string
                     name:
                       type: string
+    post:
+      summary: Create a new model
+      description: Create a new model with the provided details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                type:
+                  type: string
+      responses:
+        "201":
+          description: Model created successfully
   /models/{model_id}:
     get:
       summary: Get model by ID
@@ -47,6 +64,29 @@ paths:
                     type: string
                   status:
                     type: string
+    put:
+      summary: Update a model
+      description: Update an existing model
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                status:
+                  type: string
+      responses:
+        "200":
+          description: Model updated successfully
   /training-jobs:
     get:
       summary: List training jobs
@@ -91,3 +131,4 @@ paths:
                     type: string
                   status:
                     type: string
+

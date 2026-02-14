@@ -10,7 +10,7 @@ import (
 	"org.subh/api-term/pkgs/api/model"
 )
 
-func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]string, headerValues map[string]string) (string, int, error) {
+func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]string, headerValues map[string]string, body string, contentType string) (string, int, error) {
 	finalPath := ep.Path
 
 	usedParams := make(map[string]bool)
@@ -58,20 +58,34 @@ func InvokeEndpoint(baseURL string, ep *model.Endpoint, inputValues map[string]s
 
 	url := baseURL + finalPath
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	var req *http.Request
+	var resp *http.Response
+	var err error
+
+	if body != "" {
+		req, err = http.NewRequest(ep.Method, url, strings.NewReader(body))
+	} else {
+		req, err = http.NewRequest(ep.Method, url, nil)
+	}
+
 	if err != nil {
 		return "", 0, fmt.Errorf("Error: %v", err)
 	}
+
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+
 	for k, v := range headerValues {
 		if k != "" {
 			req.Header.Set(k, v)
 		}
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		return "", 0, fmt.Errorf("Error: %v", err)
 	}
 	defer resp.Body.Close()
-	body, _ := ioutil.ReadAll(resp.Body)
-	return string(body), resp.StatusCode, nil
+	respBody, _ := ioutil.ReadAll(resp.Body)
+	return string(respBody), resp.StatusCode, nil
 }
