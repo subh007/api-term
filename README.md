@@ -25,6 +25,9 @@ go run ./cli --url https://example.com/openapi.yaml --url https://example.com/ot
 
 ## How To Use The TUI
 
+### demo
+[![asciicast](https://asciinema.org/a/a9tRxbO1NsCkAymI.svg)](https://asciinema.org/a/a9tRxbO1NsCkAymI)
+
 **Navigation**
 - `j` / `<Down>`: move down
 - `k` / `<Up>`: move up
