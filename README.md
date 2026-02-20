@@ -23,6 +23,28 @@ Run with one or more OpenAPI URLs:
 go run ./cli --url https://example.com/openapi.yaml --url https://example.com/other.yaml
 ```
 
+## Docker
+
+Pull the image from GitHub Container Registry:
+```bash
+docker pull ghcr.io/subh007/api-term:0.2
+```
+
+Run with the bundled sample spec:
+```bash
+docker run -it ghcr.io/subh007/api-term:0.2
+```
+
+Run with a local OpenAPI file:
+```bash
+docker run -it -v /path/to/openapi.yaml:/spec.yaml ghcr.io/subh007/api-term:0.2 --file /spec.yaml
+```
+
+Run with an OpenAPI URL:
+```bash
+docker run -it ghcr.io/subh007/api-term:0.2 --url https://example.com/openapi.yaml
+```
+
 ## How To Use The TUI
 
 ### demo
