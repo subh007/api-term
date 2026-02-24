@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -8,6 +9,8 @@ import (
 
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
+	"google.golang.org/genai"
+	"org.subh/api-term/pkgs/ai"
 	"org.subh/api-term/pkgs/api/client"
 	"org.subh/api-term/pkgs/api/model"
 	"org.subh/api-term/pkgs/api/parser"
@@ -70,6 +73,15 @@ type MainHandler struct {
 	HeaderValues     map[string]string
 	TermWidth        int
 	TermHeight       int
+
+	// Gemini State
+	ShowGemini   bool
+	GeminiZoomed bool
+	GeminiWidget *widgets.List
+	GeminiInput  *widgets.Paragraph
+	GeminiChat   *genai.Chat
+	GeminiQuery  string
+	GeminiCtx    context.Context
 }
 
 func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandler {
@@ -128,15 +140,29 @@ func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandle
 	  Enter        Select Endpoint / Invoke
 	  i            Focus Input
 	  b            Edit Base URL
-	  i            Focus Input
-	  b            Edit Base URL
 	  H            Edit Headers
 	  B            Edit Body
 	  C            Edit Content-Type
+	  g            Toggle Gemini Insights (Tab to focus Gemini/Output)
+	  G            Chat with Gemini
+	  Z            Zoom/Fullscreen Gemini Insights
 	  ? / h        Toggle Help
 	  q / <C-c>    Quit
 	`
 	help.BorderStyle.Fg = ui.ColorYellow
+
+	geminiWidget := widgets.NewList()
+	geminiWidget.Title = "Gemini Insights"
+	geminiWidget.Rows = []string{}
+	geminiWidget.WrapText = true
+	geminiWidget.TextStyle = ui.NewStyle(ui.ColorCyan)
+	geminiWidget.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan)
+	geminiWidget.BorderStyle.Fg = ui.ColorCyan
+
+	geminiInput := widgets.NewParagraph()
+	geminiInput.Title = "Gemini Chat (Press 'G' to ask)"
+	geminiInput.Text = ""
+	geminiInput.BorderStyle.Fg = ui.ColorMagenta
 
 	h := &MainHandler{
 		Endpoints:         endpoints,
@@ -149,12 +175,15 @@ func NewMainHandler(cfg *config.Config, endpoints []*model.Endpoint) *MainHandle
 		Input:             input,
 		BodyWidget:        bodyWidget,
 		ContentTypeWidget: contentTypeWidget,
+		GeminiWidget:      geminiWidget,
+		GeminiInput:       geminiInput,
 		Help:              help,
 		FocusMode:         "list",
 		BaseURL:           cfg.BaseURL,
 		ContentTypeInput:  "application/json",
 		InputValues:       make(map[string]string),
 		HeaderValues:      make(map[string]string),
+		GeminiCtx:         context.Background(),
 	}
 
 	return h
@@ -173,6 +202,22 @@ func (h *MainHandler) Resize(termWidth, termHeight int) {
 func (h *MainHandler) updateLayout() {
 	termWidth := h.TermWidth
 	termHeight := h.TermHeight
+
+	if h.GeminiZoomed {
+		h.GeminiWidget.SetRect(0, 0, termWidth, termHeight-3)
+		h.GeminiInput.SetRect(0, termHeight-3, termWidth, termHeight)
+
+		// Hide everything else
+		h.List.SetRect(0, 0, 0, 0)
+		h.Output.SetRect(0, 0, 0, 0)
+		h.BaseURLWidget.SetRect(0, 0, 0, 0)
+		h.HeadersWidget.SetRect(0, 0, 0, 0)
+		h.Input.SetRect(0, 0, 0, 0)
+		h.BodyWidget.SetRect(0, 0, 0, 0)
+		h.ContentTypeWidget.SetRect(0, 0, 0, 0)
+		h.Help.SetRect(termWidth/4, termHeight/4, 3*termWidth/4, 3*termHeight/4)
+		return
+	}
 
 	// Determine if we need to show body widget
 	showBody := false
@@ -227,7 +272,15 @@ func (h *MainHandler) updateLayout() {
 			h.BodyWidget.SetRect(0, 0, 0, 0) // Hide
 		}
 
-		h.Output.SetRect(0, listHeight, termWidth, bottomY)
+		if h.ShowGemini {
+			h.Output.SetRect(0, listHeight, termWidth/2, bottomY)
+			h.GeminiWidget.SetRect(termWidth/2, listHeight, termWidth, bottomY-3)
+			h.GeminiInput.SetRect(termWidth/2, bottomY-3, termWidth, bottomY)
+		} else {
+			h.Output.SetRect(0, listHeight, termWidth, bottomY)
+			h.GeminiWidget.SetRect(0, 0, 0, 0)
+			h.GeminiInput.SetRect(0, 0, 0, 0)
+		}
 	} else {
 		// Extreme fallback
 		h.List.SetRect(0, 0, termWidth, 1)
@@ -240,6 +293,9 @@ func (h *MainHandler) updateLayout() {
 func (h *MainHandler) Render() {
 	if h.ShowHelp {
 		ui.Render(h.Help)
+	} else if h.GeminiZoomed {
+		h.updateLayout()
+		ui.Render(h.GeminiWidget, h.GeminiInput)
 	} else {
 		// Update input title based on selected endpoint
 		currEp := h.Endpoints[h.List.SelectedRow]
@@ -263,6 +319,50 @@ func (h *MainHandler) Render() {
 		if strings.EqualFold(currEp.Method, "POST") || strings.EqualFold(currEp.Method, "PUT") {
 			ui.Render(h.BodyWidget, h.ContentTypeWidget)
 		}
+
+		if h.ShowGemini && !h.GeminiZoomed {
+			ui.Render(h.GeminiWidget, h.GeminiInput)
+		}
+	}
+}
+
+func (h *MainHandler) initGemini() {
+	if len(h.GeminiWidget.Rows) == 0 || h.GeminiChat == nil {
+		h.GeminiWidget.Rows = []string{"Initializing Gemini insights..."}
+		h.GeminiWidget.SelectedRow = 0
+		ui.Render(h.GeminiWidget)
+
+		go func() {
+			clientCtx := h.GeminiCtx
+			gClient, err := ai.NewGeminiClient(clientCtx)
+			if err != nil {
+				h.GeminiWidget.Rows = []string{"Failed to load Gemini API: " + err.Error()}
+				ui.Render(h.GeminiWidget)
+				return
+			}
+
+			chat, err := gClient.CreateChatSession(clientCtx, "gemini-2.5-flash")
+			if err != nil {
+				h.GeminiWidget.Rows = []string{"Failed to create chat: " + err.Error()}
+				ui.Render(h.GeminiWidget)
+				return
+			}
+			h.GeminiChat = chat
+			h.GeminiWidget.Rows = []string{"Thinking..."}
+			ui.Render(h.GeminiWidget)
+
+			outText := strings.Join(h.Output.Rows, "\n")
+			prompt := "Here is the API response:\n" + outText + "\nProvide interesting insights, then ask the user for any recommendations or follow up actions."
+			resp, err := chat.SendMessage(clientCtx, genai.Part{Text: prompt})
+
+			if err != nil {
+				h.GeminiWidget.Rows = []string{"Error from Gemini: " + err.Error()}
+			} else {
+				h.GeminiWidget.Rows = append([]string{"Initial Insights:"}, strings.Split(ai.FormatContent(resp), "\n")...)
+			}
+			h.GeminiWidget.SelectedRow = 0
+			ui.Render(h.GeminiWidget)
+		}()
 	}
 }
 
@@ -311,6 +411,31 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 				h.ContentTypeInput = strings.TrimSpace(h.EditBuffer)
 				h.ContentTypeWidget.Text = h.ContentTypeInput
 				h.ContentTypeWidget.BorderStyle.Fg = ui.ColorCyan
+			case "gemini":
+				h.GeminiQuery = strings.TrimSpace(h.EditBuffer)
+				h.GeminiInput.Text = h.GeminiQuery
+				h.GeminiInput.BorderStyle.Fg = ui.ColorMagenta
+
+				if h.GeminiChat != nil && h.GeminiQuery != "" {
+					h.GeminiWidget.Rows = append(h.GeminiWidget.Rows, "You: "+h.GeminiQuery, "Thinking...")
+					ui.Render(h.GeminiWidget)
+
+					go func(query string) {
+						resp, err := h.GeminiChat.SendMessage(h.GeminiCtx, genai.Part{Text: query})
+						h.GeminiWidget.Rows = h.GeminiWidget.Rows[:len(h.GeminiWidget.Rows)-1] // remove Thinking
+						if err != nil {
+							h.GeminiWidget.Rows = append(h.GeminiWidget.Rows, "Gemini Error: "+err.Error(), "")
+						} else {
+							h.GeminiWidget.Rows = append(h.GeminiWidget.Rows, "Gemini:", "")
+							h.GeminiWidget.Rows = append(h.GeminiWidget.Rows, strings.Split(ai.FormatContent(resp), "\n")...)
+							h.GeminiWidget.Rows = append(h.GeminiWidget.Rows, "")
+						}
+						h.GeminiWidget.SelectedRow = len(h.GeminiWidget.Rows) - 1
+						ui.Render(h.GeminiWidget)
+					}(h.GeminiQuery)
+				}
+				h.GeminiInput.Text = ""
+				h.GeminiQuery = ""
 			}
 			h.EditTarget = ""
 		case "<Backspace>":
@@ -320,6 +445,8 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 					h.BaseURLWidget.Text = h.EditBuffer
 				} else if h.EditTarget == "headers" {
 					h.HeadersWidget.Text = h.EditBuffer
+				} else if h.EditTarget == "gemini" {
+					h.GeminiInput.Text = h.EditBuffer
 				} else {
 					h.Input.Text = h.EditBuffer
 				}
@@ -333,12 +460,12 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 					h.BaseURLWidget.Text = h.EditBuffer
 				} else if h.EditTarget == "headers" {
 					h.HeadersWidget.Text = h.EditBuffer
-				} else if h.EditTarget == "headers" {
-					h.HeadersWidget.Text = h.EditBuffer
 				} else if h.EditTarget == "body" {
 					h.BodyWidget.Text = h.EditBuffer
 				} else if h.EditTarget == "content-type" {
 					h.ContentTypeWidget.Text = h.EditBuffer
+				} else if h.EditTarget == "gemini" {
+					h.GeminiInput.Text = h.EditBuffer
 				} else {
 					h.Input.Text = h.EditBuffer
 				}
@@ -351,7 +478,19 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 	case "q", "<C-c>":
 		return true
 	case "<Tab>", "r":
-		if h.FocusMode == "list" {
+		if h.ShowGemini && h.FocusMode == "output" {
+			h.FocusMode = "gemini"
+			h.Output.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+			h.GeminiWidget.TitleStyle = ui.NewStyle(ui.ColorYellow)
+			h.GeminiWidget.BorderStyle.Fg = ui.ColorYellow
+		} else if h.ShowGemini && h.FocusMode == "gemini" {
+			h.FocusMode = "list"
+			h.GeminiWidget.TitleStyle = ui.NewStyle(ui.ColorCyan)
+			h.GeminiWidget.BorderStyle.Fg = ui.ColorCyan
+			h.List.TitleStyle = ui.NewStyle(ui.ColorYellow)
+			h.List.BorderStyle.Fg = ui.ColorYellow
+		} else if h.FocusMode == "list" {
 			h.FocusMode = "output"
 			h.List.TitleStyle = ui.NewStyle(ui.ColorWhite)
 			h.List.BorderStyle.Fg = ui.ColorWhite
@@ -363,11 +502,19 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 			h.List.BorderStyle.Fg = ui.ColorYellow
 			h.Output.TitleStyle = ui.NewStyle(ui.ColorWhite)
 			h.Output.BorderStyle.Fg = ui.ColorWhite
+			if h.ShowGemini {
+				h.GeminiWidget.TitleStyle = ui.NewStyle(ui.ColorCyan)
+				h.GeminiWidget.BorderStyle.Fg = ui.ColorCyan
+			}
 		}
 	case "j", "<Down>":
 		if h.FocusMode == "list" {
 			if h.List.SelectedRow < len(h.List.Rows)-1 {
 				h.List.SelectedRow++
+			}
+		} else if h.FocusMode == "gemini" {
+			if h.GeminiWidget.SelectedRow < len(h.GeminiWidget.Rows)-1 {
+				h.GeminiWidget.SelectedRow++
 			}
 		} else {
 			if h.Output.SelectedRow < len(h.Output.Rows)-1 {
@@ -379,15 +526,24 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 			if h.List.SelectedRow > 0 {
 				h.List.SelectedRow--
 			}
+		} else if h.FocusMode == "gemini" {
+			if h.GeminiWidget.SelectedRow > 0 {
+				h.GeminiWidget.SelectedRow--
+			}
 		} else {
 			if h.Output.SelectedRow > 0 {
 				h.Output.SelectedRow--
 			}
 		}
 	case "<Enter>":
-		if h.FocusMode == "output" {
+		if h.FocusMode == "output" || h.FocusMode == "gemini" {
 			return false
 		}
+
+		// Reset Gemini chat state when a new API call is made
+		h.GeminiChat = nil
+		h.GeminiWidget.Rows = []string{}
+		h.GeminiWidget.SelectedRow = 0
 		ep := h.Endpoints[h.List.SelectedRow]
 		inputValues := map[string]string{}
 		// Initialize with global query params
@@ -514,6 +670,57 @@ func (h *MainHandler) HandleEvent(e tui.Event) bool {
 			h.ContentTypeWidget.BorderStyle.Fg = ui.ColorYellow
 			h.Output.BorderStyle.Fg = ui.ColorWhite
 		}
+	case "g":
+		h.ShowGemini = !h.ShowGemini
+		if h.ShowGemini {
+			h.GeminiZoomed = false
+			h.FocusMode = "gemini"
+			h.List.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.List.BorderStyle.Fg = ui.ColorWhite
+			h.Output.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+			h.GeminiWidget.TitleStyle = ui.NewStyle(ui.ColorYellow)
+			h.GeminiWidget.BorderStyle.Fg = ui.ColorYellow
+			h.updateLayout()
+			ui.Clear()
+			h.Render()
+
+			h.initGemini()
+		} else {
+			h.FocusMode = "list"
+			h.List.TitleStyle = ui.NewStyle(ui.ColorYellow)
+			h.List.BorderStyle.Fg = ui.ColorYellow
+			h.Output.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+			h.updateLayout()
+			ui.Clear()
+		}
+	case "G":
+		if h.ShowGemini {
+			h.InputMode = true
+			h.EditTarget = "gemini"
+			h.EditBuffer = h.GeminiQuery
+			h.GeminiInput.Text = h.EditBuffer
+			h.GeminiInput.BorderStyle.Fg = ui.ColorYellow
+		}
+	case "Z":
+		h.GeminiZoomed = !h.GeminiZoomed
+		if h.GeminiZoomed {
+			if !h.ShowGemini {
+				h.ShowGemini = true
+			}
+			h.FocusMode = "gemini"
+			h.GeminiWidget.TitleStyle = ui.NewStyle(ui.ColorYellow)
+			h.GeminiWidget.BorderStyle.Fg = ui.ColorYellow
+			h.List.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.List.BorderStyle.Fg = ui.ColorWhite
+			h.Output.TitleStyle = ui.NewStyle(ui.ColorWhite)
+			h.Output.BorderStyle.Fg = ui.ColorWhite
+			h.initGemini()
+		}
+		h.updateLayout()
+		ui.Clear()
+		h.Render()
 	case "?", "h":
 		h.ShowHelp = true
 	}
