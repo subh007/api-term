@@ -60,6 +60,14 @@ docker run -it ghcr.io/subh007/api-term:0.2 --url https://example.com/openapi.ya
 - `b`: edit Base URL
 - `H`: edit Headers
 - `i`: edit Query Parameters
+- `B`: edit Body (for POST/PUT)
+- `C`: edit Content-Type (for POST/PUT)
+
+**Gemini Insights (AI)**
+- `g`: toggle Gemini Insights widget (splits Output view)
+- `Tab`: focus the Gemini widget to scroll history
+- `G`: chat with Gemini (input query)
+- `Z`: zoom/fullscreen the Gemini widget
 
 **Help**
 - `?` or `h`: toggle help overlay
@@ -85,6 +93,23 @@ docker run -it ghcr.io/subh007/api-term:0.2 --url https://example.com/openapi.ya
 - Required query parameters are enforced when invoking an endpoint.
 - Query parameters are URL-encoded before the request is sent.
 - The list view shows query parameter names as `?param1&param2` next to the path.
+
+## Google Gemini API Integrations
+
+You can leverage Google's GenAI directly within the TUI to summarize and analyze API responses!
+
+**Prerequisites:**
+You must export your API key to your environment before running `api-term`:
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+```
+
+**How To Use:**
+1. Focus an endpoint and trigger a request (`<Enter>`) to get a response.
+2. Press `g` to open the Gemini widget. The app will automatically analyze the response body and ask for recommendations or insights.
+3. Press `Tab` to navigate to the Gemini widget and use `j`/`k` to scroll through the analysis.
+4. Press `G` to type a follow-up query securely to the AI model.
+5. Press `Z` to zoom the model securely to the entire terminal window for an immersive chat experience.
 
 ## Mock Server (Optional)
 
